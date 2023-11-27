@@ -266,14 +266,16 @@ rule biscuit_qc_index:
         "{DATA_PATH}/reference/biscuit_qc/cpg.bed.gz",
         "{DATA_PATH}/reference/biscuit_qc/windows100bp.gc_content.bot10p.bed.gz",
         "{DATA_PATH}/reference/biscuit_qc/windows100bp.gc_content.top10p.bed.gz",
-        path="{DATA_PATH}/reference/biscuit_qc/",
+        # path="{DATA_PATH}/reference/biscuit_qc/"
+        path=directory("{DATA_PATH}/reference/biscuit_qc/")
+        # Outputs of incorrect type (directories when expecting files or vice versa). Output directories must be flagged with directory(). 
     log:
         "{DATA_PATH}/reference/biscuit_qc/biscuit_qc.log.txt",
     params:
         out_dir="{DATA_PATH}/reference/biscuit_qc/",
     shell:
         """
-        mkdir {params.out_dir}
+        mkdir -p {params.out_dir}
         build_biscuit_QC_assets.pl --verbose --ref {input.masked_reference_genome} --outdir {params.out_dir} >{log} 2>&1
         """
 
@@ -292,6 +294,10 @@ rule bwa_meth_index:
         "{DATA_PATH}/reference/GRCh38-DAC-U2AF1.fna.bwameth.c2t.pac"
     log:
         index = "{DATA_PATH}/reference/bwameth_bwa-mem2-index.log.txt"
+    resources:
+       # mem_mb = 150000 
+       # In reality it required around 150GB of RAM but it was only ran once and keeping it at 150GB would be over the max memory of the cluster
+       mem_mb = 1000 
     shell:
         "bwameth.py index-mem2 {input.masked_reference_genome} >{log.index} 2>&1"
 
@@ -322,7 +328,9 @@ rule md5sum:
             wildcards.sample, "md5sum_R2"
         ],
         subsampled="subsampled" in config,
-    threads: 25  # Bit of a hack: this is IO bound, try to throttle it a bit
+    threads: 15  # Bit of a hack: this is IO bound, try to throttle it a bit
+    resources:
+       mem_mb = 10000
     shell:
         """
         echo -e "{params.r1_checksum}\t{input.r1_file}\n{params.r2_checksum}\t{input.r2_file}" > {output.checksums}
@@ -372,6 +380,7 @@ rule seqtk_subsample:
 rule fastp:
     group:
         "align_core"
+        # "bwa_meth"
     conda:
         "envs/env.yaml"
     input:
@@ -382,6 +391,7 @@ rule fastp:
         fastp_pipe_output=temp(
             pipe("{DATA_PATH}/{experiment}/{sample}/fastp/interleaved.fa")
         ),
+        # fastp_pipe_output="{DATA_PATH}/{experiment}/{sample}/fastp/interleaved.fa",
         fastp_failed="{DATA_PATH}/{experiment}/{sample}/fastp/failed.fa.gz",  # Length < 15
         fastp_json=ensure(
             "{DATA_PATH}/{experiment}/{sample}/fastp/{sample}.fastp.json",
@@ -429,26 +439,34 @@ rule fastp:
 rule bwa_meth:
     group:
         "align_core"
+        # "bwa_meth"
     conda:
         "envs/env.yaml"
     input:
         input_fasta = "{DATA_PATH}/{experiment}/{sample}/fastp/interleaved.fa",
-        reference_genome = rules.mask_reference_fasta.output.masked_reference_genome,
+        reference_genome = ancient(rules.mask_reference_fasta.output.masked_reference_genome),
         bwa_meth_indices = ancient(rules.bwa_meth_index.output)  # We assume ancient, to not force re-run of bwa mem vs bwa-mem2
     output:
+        # "{DATA_PATH}/{experiment}/{sample}/samtools/raw.sam"
         temp(pipe("{DATA_PATH}/{experiment}/{sample}/samtools/raw.sam"))
     params:
         # TODO: Should we include the platform or barcode here? Does that have value for us?
-        read_group = "@RG\\tID:{sample}\\tSM:{sample}"
+        read_group = "@RG\\tID:{sample}\\tSM:{sample}",
+        out_dir = "{DATA_PATH}/{experiment}/{sample}/samtools"
     log:
         bwameth_err = "{DATA_PATH}/{experiment}/{sample}/logs/bwameth.log.txt"
     benchmark:
         "{DATA_PATH}/{experiment}/{sample}/logs/benchmark/bwameth.txt"
-    threads: lambda x: len(os.sched_getaffinity(0))-10  # RIS allocation -- all cores but 10?  # round(len(os.sched_getaffinity(0))/2
+    threads: 30
+        # lambda x: len(os.sched_getaffinity(0))-10  # RIS allocation -- all cores but 10?  # round(len(os.sched_getaffinity(0))/2
     resources:
-       mem_mb = 72000
+       mem_mb = 112000,
+       jobfs = "150GB"
     shell:
-        "bwameth.py -p -t {threads} --read-group '{params.read_group}' --reference {input.reference_genome} {input.input_fasta} 2>{log.bwameth_err} >{output}"
+        """
+        mkdir -p {params.out_dir}
+        bwameth.py -p -t {threads} --read-group '{params.read_group}' --reference {input.reference_genome} {input.input_fasta} 2>{log.bwameth_err} >{output}
+        """
 
 
 ### biscuit
@@ -490,7 +508,7 @@ rule mark_nonconverted:
         "envs/env.yaml"
     input:
         aligned_sam="{DATA_PATH}/{experiment}/{sample}/samtools/raw.sam",
-        reference_genome=rules.mask_reference_fasta.output.masked_reference_genome,
+        reference_genome=ancient(rules.mask_reference_fasta.output.masked_reference_genome),
     output:
         temp(pipe("{DATA_PATH}/{experiment}/{sample}/samtools/nonconv-marked.sam")),
     log:
@@ -615,7 +633,8 @@ rule biscuit_bed:
         minimum_reads=3,
     threads: 10
     resources:
-       mem_mb = 128000
+       # mem_mb = 80000
+       mem_mb = 130000
     shell:
         """
         biscuit pileup -@ {threads} {input.masked_reference_genome} {input.bam} 2>{log.pileup} | \
@@ -681,6 +700,8 @@ rule biscuit_qc:
         out_dir="{DATA_PATH}/{experiment}/{sample}/biscuit/",
         sample_str="{sample}",
     threads: 1
+    resources:
+       mem_mb = 10000
     shell:
         "QC.sh --outdir {params.out_dir} {input.biscuit_qc_index} {input.masked_reference_genome} {params.sample_str} {input.bam} >{log} 2>&1"
 
@@ -691,7 +712,7 @@ rule methyldackel_mbias_plots:
         "envs/env.yaml"
     input:
         bam=rules.samtools_fixmate_sort_markdup.output.bam,
-        reference=rules.mask_reference_fasta.output.masked_reference_genome,
+        reference=ancient(rules.mask_reference_fasta.output.masked_reference_genome),
         index=rules.samtools_index.output,
     output:
         mbias_txt="{DATA_PATH}/{experiment}/{sample}/methyldackel/mbias.txt",
@@ -722,7 +743,7 @@ rule fastqc_bam:
     shell:
         """
         mkdir -p {params.out_dir}
-        fastqc --threads 8 --outdir {params.out_dir} {input} >{log} 2>&1
+        fastqc --threads {threads} --outdir {params.out_dir} {input} >{log} 2>&1
         """
 
 
@@ -764,7 +785,7 @@ rule touch_complete_flag:
     shell:
         """
         touch {params.out_flag}
-        curl -H "Priority: low" -d "$HOSTNAME: {params.out_flag}" ntfy.sh/semenko-snakemake
+        # curl -H "Priority: low" -d "$HOSTNAME: {params.out_flag}" ntfy.sh/semenko-snakemake
         """
 
 
@@ -791,11 +812,13 @@ ruleorder: md5sum > seqtk_subsample
 # nfty.sh push for the whole job
 onsuccess:
     shell(
-        'curl -H "Title: Success" -H "Tags: tada" -d "Job complete on $HOSTNAME" ntfy.sh/semenko-snakemake'
+        # 'curl -H "Title: Success" -H "Tags: tada" -d "Job complete on $HOSTNAME" ntfy.sh/semenko-snakemake'
+        'echo "Job complete"'
     )
 
 
 onerror:
     shell(
-        'curl -H "Title: Failure" -H "Tags: warning" -d "Job failure on $HOSTNAME" ntfy.sh/semenko-snakemake'
+        # 'curl -H "Title: Failure" -H "Tags: warning" -d "Job failure on $HOSTNAME" ntfy.sh/semenko-snakemake'
+        'echo "Job failure"'
     )

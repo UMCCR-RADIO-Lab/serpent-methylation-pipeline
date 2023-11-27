@@ -1,1 +1,9 @@
 .snakemake/
+data/reference/
+snakejob_logs/
+ftp.ncbi.nlm.nih.gov/
+encode-public.s3.amazonaws.com/
+data/cup/
+data/test/
+data/*.csv
+nohup.out
