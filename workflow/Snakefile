@@ -295,9 +295,7 @@ rule bwa_meth_index:
     log:
         index = "{DATA_PATH}/reference/bwameth_bwa-mem2-index.log.txt"
     resources:
-       # mem_mb = 150000 
-       # In reality it required around 150GB of RAM but it was only ran once and keeping it at 150GB would be over the max memory of the cluster
-       mem_mb = 1000 
+       mem_mb = 150000 
     shell:
         "bwameth.py index-mem2 {input.masked_reference_genome} >{log.index} 2>&1"
 
@@ -701,7 +699,7 @@ rule biscuit_qc:
         sample_str="{sample}",
     threads: 1
     resources:
-       mem_mb = 10000
+       mem_mb = 50000
     shell:
         "QC.sh --outdir {params.out_dir} {input.biscuit_qc_index} {input.masked_reference_genome} {params.sample_str} {input.bam} >{log} 2>&1"
 
@@ -764,6 +762,23 @@ rule goleft_indexcov:
         # TODO: Run on all .bam files? Multiple from one project? All from a given sequencing batch?
         "goleft indexcov --directory {params.out_dir} {input.bam} >{log} 2>&1"
 
+rule qualimap_bamqc:
+    conda:
+        "envs/env.yaml" 
+    input:
+        bam=rules.samtools_fixmate_sort_markdup.output.bam
+    output:
+        qc_dir=directory("{DATA_PATH}/{experiment}/{sample}/qualimap_bamqc")
+    params:
+        java_mem_size=100
+    resources:
+        # mem_mb = 30000 
+        mem = "100GB"
+    threads: 32
+    shell:
+        """
+        qualimap bamqc -bam {input.bam} -outdir {output.qc_dir} --collect-overlap-pairs --java-mem-size={params.java_mem_size}G
+        """
 
 ### Run Aggregator
 # Note: This pan-dependency ensures all other jobs are run.
@@ -778,6 +793,7 @@ rule touch_complete_flag:
         rules.fastqc_bam.output,
         rules.methyldackel_mbias_plots.output,
         rules.goleft_indexcov.output,
+        rules.qualimap_bamqc.output,
     output:
         "{DATA_PATH}/{experiment}/{sample}/.pipeline-complete-v2",
     params:
