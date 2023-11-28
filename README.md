@@ -124,5 +124,5 @@ For similar pipelines and inspiration, see:
 
 Here's a high-level overview of the Snakemake pipeline (generated via `snakemake --rulegraph | dot -Tpng > rules.png`)
 
-![image](https://user-images.githubusercontent.com/167135/211419041-54664bc2-3d5d-43ad-9dca-16d62da07d7b.png)
+![image](./rules.png)
 
